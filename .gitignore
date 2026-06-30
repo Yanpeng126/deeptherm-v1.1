@@ -5,5 +5,4 @@ __pycache__/
 *.npz
 .ipynb_checkpoints/
 .DS_Store
-data/curated_4997.csv
 data/raw/
