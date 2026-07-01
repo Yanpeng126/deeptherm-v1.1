@@ -28,6 +28,14 @@ Eight of nine random-split targets reach or exceed the paper. The residual ΔHf 
 
 Clone this repository.
 
+Using conda:
+
+```bash
+cd deeptherm-v1.1
+conda env create -f environment.yml
+conda activate deeptherm
+```
+
 A100 or any single GPU with >=24 GB memory is recommended for full ensemble runs.
 
 ## Data preparation
