@@ -1,0 +1,10 @@
+name: deeptherm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - chemprop==2.2.3
+      - lightning
+      - openpyxl
