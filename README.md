@@ -94,7 +94,7 @@ model = load_deeptherm(
     d_hidden=600, depth=5, ecfp_bits=1024,
 )
 
-# Example SMILES: ethanol, acetone, cyclohexane
+# Example SMILES, replace your molecular here
 smiles = ["CCO", "CC(=O)C", "C1CCCCC1"]
 points = [MoleculeDatapoint.from_smi(s, x_d=morgan_fp(s, n_bits=1024))
           for s in smiles]
