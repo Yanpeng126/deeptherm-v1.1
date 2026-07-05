@@ -77,69 +77,37 @@ SPLIT_MODE=random OUT_ROOT=runs/ensemble_random bash run_ensemble.sh
 
 ## Loading trained models
 
-Because `src/` is not a Python package, add it to `sys.path` before importing.
+`src/` is not a Python package, so add it to `sys.path` before importing:
+
+```python
+import sys
+sys.path.insert(0, "src")
+from model import load_deeptherm
+```
 
 ### Single model
 
 ```python
-import sys, torch
-sys.path.insert(0, "src")
-
-from model import load_deeptherm
-from dataset import morgan_fp, TARGET_COLS, make_dataset
-from chemprop.data import MoleculeDatapoint, build_dataloader
-
 model = load_deeptherm(
     "runs/ensemble_random/seed_42/lightning_logs/version_0/checkpoints/best.ckpt",
     d_hidden=600, depth=5, ecfp_bits=1024,
 )
-
-# Example SMILES, replace your molecular here
-smiles = ["CCO", "CC(=O)C", "C1CCCCC1"]
-points = [MoleculeDatapoint.from_smi(s, x_d=morgan_fp(s, n_bits=1024))
-          for s in smiles]
-loader = build_dataloader(make_dataset(points), batch_size=32,
-                          num_workers=0, shuffle=False)
-
-with torch.no_grad():
-    for batch in loader:
-        bmg, V_d, X_d, *_ = batch
-        preds = model(bmg, V_d, X_d)   # kcal/mol (Hf), cal/mol/K (S, Cp)
-        for smi, y in zip(smiles, preds):
-            print(smi, dict(zip(TARGET_COLS, [round(v.item(), 2) for v in y])))
 ```
 
 ### Inference-time ensemble
 
 ```python
-import sys, numpy as np, torch
-sys.path.insert(0, "src")
-
-from model import load_deeptherm
-from dataset import morgan_fp, TARGET_COLS, make_dataset
-from chemprop.data import MoleculeDatapoint, build_dataloader
+import numpy as np, torch
 
 seeds = [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
 ckpts = [f"runs/ensemble_random/seed_{s}/lightning_logs/version_0/checkpoints/best.ckpt"
          for s in seeds]
 models = [load_deeptherm(p, d_hidden=600, depth=5, ecfp_bits=1024) for p in ckpts]
 
-npz = np.load("runs/ensemble_random/ensemble_predictions.npz")
-weights = torch.tensor(npz["weights"], dtype=torch.float32)   # shape [10]
-
-smiles = ["CCO", "CC(=O)C", "C1CCCCC1"]
-points = [MoleculeDatapoint.from_smi(s, x_d=morgan_fp(s, n_bits=1024))
-          for s in smiles]
-loader = build_dataloader(make_dataset(points), batch_size=32,
-                          num_workers=0, shuffle=False)
-
-with torch.no_grad():
-    for batch in loader:
-        bmg, V_d, X_d, *_ = batch
-        stacked = torch.stack([m(bmg, V_d, X_d) for m in models])   # [10, B, 9]
-        ensemble = (stacked * weights[:, None, None]).sum(dim=0)    # [B, 9]
-        for smi, y in zip(smiles, ensemble):
-            print(smi, dict(zip(TARGET_COLS, [round(v.item(), 2) for v in y])))
+weights = torch.tensor(
+    np.load("runs/ensemble_random/ensemble_predictions.npz")["weights"],
+    dtype=torch.float32,
+)
 ```
 
 ## File layout
