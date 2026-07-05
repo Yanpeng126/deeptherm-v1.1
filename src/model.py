@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
 import torch
 from torch import Tensor, nn
 
 from chemprop.models import MPNN
 from chemprop.nn import BondMessagePassing, NormAggregation, RegressionFFN
+from chemprop.nn.transforms import UnscaleTransform
 
 
 class ECFPProjection(nn.Module):
@@ -17,6 +21,8 @@ class ECFPProjection(nn.Module):
 
     def __init__(self, n_bits: int, d_out: int, scale: float = 0.01):
         super().__init__()
+        self.n_bits = n_bits
+        self.d_out = d_out
         self.proj = nn.Linear(n_bits, d_out)
         for p in self.proj.parameters():
             p.requires_grad = False
@@ -38,6 +44,10 @@ class BondAttentionEncoder(nn.Module):
     def __init__(self, d_h: int = 300, depth: int = 3, num_heads: int = 4,
                  dropout: float = 0.0):
         super().__init__()
+        self._d_h = d_h
+        self._depth = depth
+        self._num_heads = num_heads
+        self._dropout = dropout
         self.mp = BondMessagePassing(d_h=d_h, depth=depth, dropout=dropout,
                                      undirected=False)
         self.attn = nn.MultiheadAttention(
@@ -61,7 +71,16 @@ class BondAttentionEncoder(nn.Module):
 
     @property
     def hparams(self):
-        return self.mp.hparams
+        # Return a fresh dict on every access; chemprop's MPNN._load pops
+        # "cls" from this dict during checkpoint loading, and a stale
+        # reference would break subsequent accesses.
+        return {
+            "cls": self.__class__,
+            "d_h": self._d_h,
+            "depth": self._depth,
+            "num_heads": self._num_heads,
+            "dropout": self._dropout,
+        }
 
     def forward(self, bmg, V_d: Tensor | None = None) -> Tensor:
         bmg = self.mp.graph_transform(bmg)
@@ -159,3 +178,68 @@ def build_deeptherm(
         predictor=predictor,
         X_d_transform=X_d_transform,
     )
+
+
+def load_deeptherm(
+    ckpt_path: str | Path,
+    n_targets: int = 9,
+    d_hidden: int = 600,
+    depth: int = 5,
+    num_heads: int = 4,
+    ffn_hidden: int = 300,
+    ffn_layers: int = 1,
+    ecfp_bits: int = 1024,
+    ecfp_proj_dim: int = 64,
+    map_location: str = "cpu",
+) -> MPNN:
+    """Load a trained DeepTherm model from a Lightning checkpoint.
+
+    Prefer this over ``MPNN.load_from_checkpoint`` for checkpoints trained by
+    older versions of the code (where the encoder incorrectly reported itself
+    as a plain BondMessagePassing in its hparams). The hyperparameters given
+    here must match the ones used at training time; the values in the default
+    arguments correspond to the ensemble configuration shipped with this repo.
+
+    Returns a model in eval mode with predictor.output_transform restored, so
+    predictions come back in physical units (kcal/mol for enthalpy, cal/mol/K
+    for entropy and heat capacity).
+    """
+    ckpt = torch.load(ckpt_path, map_location=map_location, weights_only=False)
+    state = ckpt["state_dict"]
+
+    # Placeholder output_transform. The real mean and scale are overwritten
+    # from the checkpoint state_dict during load_state_dict below.
+    placeholder_output = UnscaleTransform(
+        np.zeros(n_targets, dtype=np.float32),
+        np.ones(n_targets, dtype=np.float32),
+    )
+
+    model = build_deeptherm(
+        n_targets=n_targets,
+        d_hidden=d_hidden,
+        depth=depth,
+        num_heads=num_heads,
+        ffn_hidden=ffn_hidden,
+        ffn_layers=ffn_layers,
+        ecfp_bits=ecfp_bits,
+        ecfp_proj_dim=ecfp_proj_dim,
+        output_transform=placeholder_output,
+    )
+
+    result = model.load_state_dict(state, strict=False)
+    if result.unexpected_keys:
+        raise RuntimeError(
+            f"Unexpected keys when loading {ckpt_path}: "
+            f"{result.unexpected_keys[:5]}..."
+        )
+    real_missing = [k for k in result.missing_keys
+                    if not k.endswith(".running_mean")
+                    and not k.endswith(".running_var")
+                    and not k.endswith(".num_batches_tracked")]
+    if real_missing:
+        raise RuntimeError(
+            f"Missing keys when loading {ckpt_path}: {real_missing[:5]}..."
+        )
+
+    model.eval()
+    return model

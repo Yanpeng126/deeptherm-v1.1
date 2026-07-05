@@ -38,15 +38,17 @@ conda activate deeptherm
 
 A100 or any single GPU with >=24 GB memory is recommended for full ensemble runs.
 
-## Data preparation
+## Data
 
-Place the supplementary curated dataset (Supplementary Data 1 from the paper) as `data/raw/curated_dataset.xlsx`, then:
+The canonicalized dataset `data/curated_4997.csv` is already included in this repository.
 
-```bash
-python src/prepare_data.py
-```
+To regenerate the CSV from a fresh copy of Supplementary Data 1, place the source file as `data/raw/curated_dataset.xlsx` and run:
 
-This writes a canonicalized CSV to `data/curated_4997.csv` containing 4,997 species with 9 thermochemistry targets.
+​```bash
+python src/prepare_data.py \
+    --xlsx data/raw/curated_dataset.xlsx \
+    --out data/curated_4997.csv
+​```
 
 ## Training a single model
 
@@ -72,6 +74,24 @@ Hyperparameters in `run_ensemble.sh` are set to the values that worked best in o
 ```bash
 SPLIT_MODE=random OUT_ROOT=runs/ensemble_random bash run_ensemble.sh
 ```
+
+## Loading trained models
+
+Use `load_deeptherm` from `src/model.py`:
+
+​```python
+from src.model import load_deeptherm
+
+model = load_deeptherm(
+    "runs/ensemble_random/seed_42/lightning_logs/version_0/checkpoints/best.ckpt",
+    ecfp_bits=1024, d_hidden=600, depth=5,   # match the training config
+)
+preds = model(batch_mol_graph, X_d=morgan_fingerprints)   # kcal/mol, cal/mol/K
+​```
+
+For inference-time ensemble averaging across all 10 seeds, load each checkpoint
+with `load_deeptherm` and combine predictions with the weights saved in
+`runs/ensemble_random/ensemble_predictions.npz`.
 
 ## File layout
 
