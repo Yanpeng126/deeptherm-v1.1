@@ -79,7 +79,7 @@ SPLIT_MODE=random OUT_ROOT=runs/ensemble_random bash run_ensemble.sh
 
 Use `load_deeptherm` from `src/model.py`:
 
-​```python
+​```bash
 from src.model import load_deeptherm
 
 model = load_deeptherm(
