@@ -86,7 +86,7 @@ model = load_deeptherm(
     "runs/ensemble_random/seed_42/lightning_logs/version_0/checkpoints/best.ckpt",
     ecfp_bits=1024,
     d_hidden=600,
-    depth=5,  # match the training config
+    depth=5,
 )
 
 preds = model(batch_mol_graph, X_d=morgan_fingerprints)  # kcal/mol, cal/mol/K
