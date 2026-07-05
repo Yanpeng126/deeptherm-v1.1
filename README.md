@@ -79,15 +79,18 @@ SPLIT_MODE=random OUT_ROOT=runs/ensemble_random bash run_ensemble.sh
 
 Use `load_deeptherm` from `src/model.py`:
 
-​```bash
+```python
 from src.model import load_deeptherm
 
 model = load_deeptherm(
     "runs/ensemble_random/seed_42/lightning_logs/version_0/checkpoints/best.ckpt",
-    ecfp_bits=1024, d_hidden=600, depth=5,   # match the training config
+    ecfp_bits=1024,
+    d_hidden=600,
+    depth=5,  # match the training config
 )
-preds = model(batch_mol_graph, X_d=morgan_fingerprints)   # kcal/mol, cal/mol/K
-​```
+
+preds = model(batch_mol_graph, X_d=morgan_fingerprints)  # kcal/mol, cal/mol/K
+```
 
 For inference-time ensemble averaging across all 10 seeds, load each checkpoint
 with `load_deeptherm` and combine predictions with the weights saved in
