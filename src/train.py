@@ -18,10 +18,28 @@ from dataset import (
 from model import build_deeptherm
 
 
+def fit_affine_calibration(preds: np.ndarray, truths: np.ndarray, target_idx: int = 0):
+    x = preds[:, target_idx]
+    y = truths[:, target_idx]
+    design = np.stack([x, np.ones_like(x)], axis=1)
+    slope, intercept = np.linalg.lstsq(design, y, rcond=None)[0]
+    return float(slope), float(intercept)
+
+
+def apply_target_affine(preds: np.ndarray, target_idx: int, slope: float, intercept: float):
+    calibrated = preds.copy()
+    calibrated[:, target_idx] = slope * calibrated[:, target_idx] + intercept
+    return calibrated
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--csv", type=Path, required=True)
     p.add_argument("--save-dir", type=Path, default=Path("runs/default"))
+    p.add_argument("--resume-ckpt", type=Path, default=None,
+                   help="resume training from a checkpoint")
+    p.add_argument("--init-from-ckpt", type=Path, default=None,
+                   help="load model weights from a checkpoint")
     p.add_argument("--seed", type=int, default=42,
                    help="train/val split + model init seed")
     p.add_argument("--test-seed", type=int, default=42,
@@ -41,12 +59,26 @@ def parse_args():
     p.add_argument("--ecfp-bits", type=int, default=0,
                    help="Morgan fingerprint length; 0 disables ECFP descriptors")
     p.add_argument("--ecfp-proj-dim", type=int, default=64)
+    p.add_argument("--ecfp-mode", choices=["projected", "direct"],
+                   default="projected",
+                   help="ECFP descriptor transform")
+    p.add_argument("--ecfp-scale", type=float, default=0.01)
+    p.add_argument("--trainable-ecfp-proj", action="store_true",
+                   help="train the ECFP projection")
+    p.add_argument("--calibrate-hf-affine", action="store_true",
+                   help="apply validation-set affine correction to Hf_298")
+    p.add_argument("--hf-loss-weight", type=float, default=1.0,
+                   help="loss weight for Hf_298")
+    p.add_argument("--init-lr", type=float, default=1e-4)
+    p.add_argument("--max-lr", type=float, default=1e-3)
+    p.add_argument("--final-lr", type=float, default=1e-4)
     p.add_argument("--num-workers", type=int, default=0)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    torch.set_float32_matmul_precision("medium")
     pl.seed_everything(args.seed, workers=True)
 
     points = load_datapoints(args.csv, ecfp_bits=args.ecfp_bits)
@@ -76,6 +108,9 @@ def main():
     test_loader = build_dataloader(test_ds, args.batch_size,
                                    args.num_workers, shuffle=False)
 
+    task_weights = torch.ones(len(TARGET_COLS), dtype=torch.float32)
+    task_weights[0] = args.hf_loss_weight
+
     model = build_deeptherm(
         n_targets=len(TARGET_COLS),
         d_hidden=args.d_hidden,
@@ -86,8 +121,23 @@ def main():
         dropout=args.dropout,
         ecfp_bits=args.ecfp_bits,
         ecfp_proj_dim=args.ecfp_proj_dim,
+        ecfp_mode=args.ecfp_mode,
+        ecfp_scale=args.ecfp_scale,
+        ecfp_trainable=args.trainable_ecfp_proj,
+        task_weights=task_weights,
+        init_lr=args.init_lr,
+        max_lr=args.max_lr,
+        final_lr=args.final_lr,
         output_transform=output_transform,
     )
+
+    if args.init_from_ckpt is not None:
+        ckpt = torch.load(args.init_from_ckpt, map_location="cpu", weights_only=False)
+        model.load_state_dict(ckpt["state_dict"], strict=False)
+        task_weights_device = task_weights.to(model.criterion.task_weights.device).view(1, -1)
+        for metric in [model.criterion, *model.metrics]:
+            if hasattr(metric, "task_weights") and metric.task_weights.shape == task_weights_device.shape:
+                metric.task_weights.copy_(task_weights_device)
 
     callbacks = [
         ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1,
@@ -104,19 +154,30 @@ def main():
         default_root_dir=args.save_dir,
         log_every_n_steps=10,
         deterministic=True,
+        enable_progress_bar=False,
     )
-    trainer.fit(model, train_loader, val_loader)
+    trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume_ckpt)
 
     best_path = trainer.checkpoint_callback.best_model_path
     print(f"\nbest checkpoint: {best_path}")
 
-    pred_batches = trainer.predict(model, test_loader, ckpt_path=best_path)
+    pred_batches = trainer.predict(model, test_loader, ckpt_path=best_path, weights_only=False)
     test_preds = torch.cat(pred_batches).cpu().numpy()
     test_truths = np.stack([dp.y for dp in test_pts])
 
-    val_pred_batches = trainer.predict(model, val_loader, ckpt_path=best_path)
+    val_pred_batches = trainer.predict(model, val_loader, ckpt_path=best_path, weights_only=False)
     val_preds = torch.cat(val_pred_batches).cpu().numpy()
     val_truths = np.stack([dp.y for dp in val_pts])
+
+    raw_test_preds = test_preds.copy()
+    raw_val_preds = val_preds.copy()
+    hf_calibration = np.array([1.0, 0.0], dtype=np.float32)
+    if args.calibrate_hf_affine:
+        slope, intercept = fit_affine_calibration(val_preds, val_truths, 0)
+        hf_calibration = np.array([slope, intercept], dtype=np.float32)
+        val_preds = apply_target_affine(val_preds, 0, slope, intercept)
+        test_preds = apply_target_affine(test_preds, 0, slope, intercept)
+        print(f"Hf affine calibration from val: y = {slope:.6f} * pred + {intercept:.6f}")
 
     mae = np.abs(test_preds - test_truths).mean(axis=0)
     rmse = np.sqrt(((test_preds - test_truths) ** 2).mean(axis=0))
@@ -130,6 +191,8 @@ def main():
     np.savez(out_dir / "predictions.npz",
              test_preds=test_preds, test_truths=test_truths,
              val_preds=val_preds, val_truths=val_truths,
+             raw_test_preds=raw_test_preds, raw_val_preds=raw_val_preds,
+             hf_calibration=hf_calibration,
              target_names=np.array(TARGET_COLS),
              seed=args.seed, test_seed=args.test_seed)
 

@@ -4,8 +4,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, DataStructs
+
+RDLogger.DisableLog("rdApp.*")
 
 from chemprop.data import MoleculeDatapoint, MoleculeDataset
 from chemprop.featurizers import SimpleMoleculeMolGraphFeaturizer

@@ -12,20 +12,21 @@ from chemprop.nn.transforms import UnscaleTransform
 
 
 class ECFPProjection(nn.Module):
-    """Random projection of Morgan fingerprints into a low-dimensional embedding.
+    """Projection of Morgan fingerprints into a predictor-side embedding."""
 
-    Weights are frozen at random initialization and the output is rescaled by a
-    fixed small factor so that the fingerprint signal is preserved in the
-    forward pass without dominating gradient updates from the GNN branch.
-    """
-
-    def __init__(self, n_bits: int, d_out: int, scale: float = 0.01):
+    def __init__(
+        self,
+        n_bits: int,
+        d_out: int,
+        scale: float = 0.01,
+        trainable: bool = False,
+    ):
         super().__init__()
         self.n_bits = n_bits
         self.d_out = d_out
         self.proj = nn.Linear(n_bits, d_out)
         for p in self.proj.parameters():
-            p.requires_grad = False
+            p.requires_grad = trainable
         self.register_buffer("scale", torch.tensor(scale))
 
     def forward(self, x: Tensor) -> Tensor:
@@ -147,6 +148,13 @@ def build_deeptherm(
     dropout: float = 0.0,
     ecfp_bits: int = 0,
     ecfp_proj_dim: int = 64,
+    ecfp_mode: str = "projected",
+    ecfp_scale: float = 0.01,
+    ecfp_trainable: bool = False,
+    task_weights: Tensor | None = None,
+    init_lr: float = 1e-4,
+    max_lr: float = 1e-3,
+    final_lr: float = 1e-4,
     output_transform=None,
 ) -> MPNN:
     encoder = BondAttentionEncoder(
@@ -158,18 +166,29 @@ def build_deeptherm(
     agg = NormAggregation(norm=100.0)
 
     if ecfp_bits > 0:
-        X_d_transform = ECFPProjection(ecfp_bits, ecfp_proj_dim, scale=0.01)
-        predictor_input_dim = d_hidden + ecfp_proj_dim
+        if ecfp_mode == "direct":
+            X_d_transform = nn.Identity()
+            predictor_input_dim = d_hidden + ecfp_bits
+        elif ecfp_mode == "projected":
+            X_d_transform = ECFPProjection(
+                ecfp_bits,
+                ecfp_proj_dim,
+                scale=ecfp_scale,
+                trainable=ecfp_trainable,
+            )
+            predictor_input_dim = d_hidden + ecfp_proj_dim
+        else:
+            raise ValueError(f"unknown ecfp_mode: {ecfp_mode}")
     else:
         X_d_transform = None
         predictor_input_dim = d_hidden
-
     predictor = RegressionFFN(
         n_tasks=n_targets,
         input_dim=predictor_input_dim,
         hidden_dim=ffn_hidden,
         n_layers=ffn_layers,
         dropout=dropout,
+        task_weights=task_weights,
         output_transform=output_transform,
     )
     return MPNN(
@@ -177,6 +196,9 @@ def build_deeptherm(
         agg=agg,
         predictor=predictor,
         X_d_transform=X_d_transform,
+        init_lr=init_lr,
+        max_lr=max_lr,
+        final_lr=final_lr,
     )
 
 
@@ -190,25 +212,15 @@ def load_deeptherm(
     ffn_layers: int = 1,
     ecfp_bits: int = 1024,
     ecfp_proj_dim: int = 64,
+    ecfp_mode: str = "projected",
+    ecfp_scale: float = 0.01,
+    ecfp_trainable: bool = False,
     map_location: str = "cpu",
 ) -> MPNN:
-    """Load a trained DeepTherm model from a Lightning checkpoint.
-
-    Prefer this over ``MPNN.load_from_checkpoint`` for checkpoints trained by
-    older versions of the code (where the encoder incorrectly reported itself
-    as a plain BondMessagePassing in its hparams). The hyperparameters given
-    here must match the ones used at training time; the values in the default
-    arguments correspond to the ensemble configuration shipped with this repo.
-
-    Returns a model in eval mode with predictor.output_transform restored, so
-    predictions come back in physical units (kcal/mol for enthalpy, cal/mol/K
-    for entropy and heat capacity).
-    """
+    """Load a trained DeepTherm model from a Lightning checkpoint."""
     ckpt = torch.load(ckpt_path, map_location=map_location, weights_only=False)
     state = ckpt["state_dict"]
 
-    # Placeholder output_transform. The real mean and scale are overwritten
-    # from the checkpoint state_dict during load_state_dict below.
     placeholder_output = UnscaleTransform(
         np.zeros(n_targets, dtype=np.float32),
         np.ones(n_targets, dtype=np.float32),
@@ -223,6 +235,9 @@ def load_deeptherm(
         ffn_layers=ffn_layers,
         ecfp_bits=ecfp_bits,
         ecfp_proj_dim=ecfp_proj_dim,
+        ecfp_mode=ecfp_mode,
+        ecfp_scale=ecfp_scale,
+        ecfp_trainable=ecfp_trainable,
         output_transform=placeholder_output,
     )
 
