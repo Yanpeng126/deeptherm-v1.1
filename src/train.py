@@ -32,6 +32,63 @@ def apply_target_affine(preds: np.ndarray, target_idx: int, slope: float, interc
     return calibrated
 
 
+def atom_numbers(points):
+    nums = set()
+    for dp in points:
+        nums.update(atom.GetAtomicNum() for atom in dp.mol.GetAtoms())
+    return sorted(nums)
+
+
+def atom_count_matrix(points, nums):
+    pos = {num: i for i, num in enumerate(nums)}
+    x = np.ones((len(points), len(nums) + 1), dtype=np.float32)
+    x[:, 1:] = 0.0
+    for row, dp in enumerate(points):
+        for atom in dp.mol.GetAtoms():
+            idx = pos.get(atom.GetAtomicNum())
+            if idx is not None:
+                x[row, idx + 1] += 1.0
+    return x
+
+
+def fit_hf_atomref(train_pts, all_pts):
+    nums = atom_numbers(all_pts)
+    x = atom_count_matrix(train_pts, nums)
+    y = np.array([dp.y[0] for dp in train_pts], dtype=np.float32)
+    coef = np.linalg.lstsq(x, y, rcond=None)[0].astype(np.float32)
+    return nums, coef
+
+
+def apply_hf_atomref(points, nums, coef):
+    baseline = atom_count_matrix(points, nums) @ coef
+    for dp, base in zip(points, baseline):
+        dp.y[0] = dp.y[0] - base
+    return baseline.astype(np.float32)
+
+
+def add_hf_baseline(values: np.ndarray, baseline: np.ndarray):
+    restored = values.copy()
+    restored[:, 0] = restored[:, 0] + baseline
+    return restored
+
+
+def select_checkpoint_by_val_hf(trainer, model, val_loader, val_truths, checkpoint_dir):
+    checkpoint_paths = sorted(Path(checkpoint_dir).glob("*.ckpt"))
+    if not checkpoint_paths:
+        return None
+    best_path = None
+    best_mae = float("inf")
+    for path in checkpoint_paths:
+        pred_batches = trainer.predict(model, val_loader, ckpt_path=str(path), weights_only=False)
+        preds = torch.cat(pred_batches).cpu().numpy()
+        mae = float(np.abs(preds[:, 0] - val_truths[:, 0]).mean())
+        if mae < best_mae:
+            best_mae = mae
+            best_path = path
+    print(f"best_hf_checkpoint: {best_path}  val_hf_mae={best_mae:.4f}")
+    return str(best_path)
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--csv", type=Path, required=True)
@@ -67,8 +124,13 @@ def parse_args():
                    help="train the ECFP projection")
     p.add_argument("--calibrate-hf-affine", action="store_true",
                    help="apply validation-set affine correction to Hf_298")
+    p.add_argument("--atomref-hf", action="store_true",
+                   help="train Hf_298 as an atom-reference residual")
     p.add_argument("--hf-loss-weight", type=float, default=1.0,
                    help="loss weight for Hf_298")
+    p.add_argument("--loss", choices=["mse", "mae"], default="mse")
+    p.add_argument("--select-best-hf", action="store_true",
+                   help="select checkpoint by validation Hf_298 MAE")
     p.add_argument("--init-lr", type=float, default=1e-4)
     p.add_argument("--max-lr", type=float, default=1e-3)
     p.add_argument("--final-lr", type=float, default=1e-4)
@@ -92,6 +154,20 @@ def main():
         )
     print(f"split={args.split_mode}  "
           f"train={len(train_pts)}  val={len(val_pts)}  test={len(test_pts)}")
+
+    atomref_nums = np.array([], dtype=np.int16)
+    atomref_coef = np.array([], dtype=np.float32)
+    train_hf_base = np.zeros(len(train_pts), dtype=np.float32)
+    val_hf_base = np.zeros(len(val_pts), dtype=np.float32)
+    test_hf_base = np.zeros(len(test_pts), dtype=np.float32)
+    if args.atomref_hf:
+        nums, coef = fit_hf_atomref(train_pts, points)
+        atomref_nums = np.array(nums, dtype=np.int16)
+        atomref_coef = coef
+        train_hf_base = apply_hf_atomref(train_pts, nums, coef)
+        val_hf_base = apply_hf_atomref(val_pts, nums, coef)
+        test_hf_base = apply_hf_atomref(test_pts, nums, coef)
+        print(f"atomref_hf={len(nums)} elements")
 
     train_ds = make_dataset(train_pts)
     val_ds = make_dataset(val_pts)
@@ -125,6 +201,7 @@ def main():
         ecfp_scale=args.ecfp_scale,
         ecfp_trainable=args.trainable_ecfp_proj,
         task_weights=task_weights,
+        loss=args.loss,
         init_lr=args.init_lr,
         max_lr=args.max_lr,
         final_lr=args.final_lr,
@@ -139,9 +216,13 @@ def main():
             if hasattr(metric, "task_weights") and metric.task_weights.shape == task_weights_device.shape:
                 metric.task_weights.copy_(task_weights_device)
 
+    if args.select_best_hf:
+        checkpoint_callback = ModelCheckpoint(save_top_k=-1, filename="epoch-{epoch:03d}")
+    else:
+        checkpoint_callback = ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1,
+                                              filename="best")
     callbacks = [
-        ModelCheckpoint(monitor="val_loss", mode="min", save_top_k=1,
-                        filename="best"),
+        checkpoint_callback,
         EarlyStopping(monitor="val_loss", mode="min",
                       patience=args.patience),
     ]
@@ -158,7 +239,13 @@ def main():
     )
     trainer.fit(model, train_loader, val_loader, ckpt_path=args.resume_ckpt)
 
-    best_path = trainer.checkpoint_callback.best_model_path
+    val_truths_for_select = np.stack([dp.y for dp in val_pts])
+    if args.select_best_hf:
+        best_path = select_checkpoint_by_val_hf(
+            trainer, model, val_loader, val_truths_for_select, checkpoint_callback.dirpath,
+        ) or trainer.checkpoint_callback.best_model_path
+    else:
+        best_path = trainer.checkpoint_callback.best_model_path
     print(f"\nbest checkpoint: {best_path}")
 
     pred_batches = trainer.predict(model, test_loader, ckpt_path=best_path, weights_only=False)
@@ -167,7 +254,13 @@ def main():
 
     val_pred_batches = trainer.predict(model, val_loader, ckpt_path=best_path, weights_only=False)
     val_preds = torch.cat(val_pred_batches).cpu().numpy()
-    val_truths = np.stack([dp.y for dp in val_pts])
+    val_truths = val_truths_for_select
+
+    if args.atomref_hf:
+        test_preds = add_hf_baseline(test_preds, test_hf_base)
+        test_truths = add_hf_baseline(test_truths, test_hf_base)
+        val_preds = add_hf_baseline(val_preds, val_hf_base)
+        val_truths = add_hf_baseline(val_truths, val_hf_base)
 
     raw_test_preds = test_preds.copy()
     raw_val_preds = val_preds.copy()
@@ -193,6 +286,7 @@ def main():
              val_preds=val_preds, val_truths=val_truths,
              raw_test_preds=raw_test_preds, raw_val_preds=raw_val_preds,
              hf_calibration=hf_calibration,
+             atomref_nums=atomref_nums, atomref_coef=atomref_coef,
              target_names=np.array(TARGET_COLS),
              seed=args.seed, test_seed=args.test_seed)
 

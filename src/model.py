@@ -8,6 +8,7 @@ from torch import Tensor, nn
 
 from chemprop.models import MPNN
 from chemprop.nn import BondMessagePassing, NormAggregation, RegressionFFN
+from chemprop.nn.metrics import MAE, MSE
 from chemprop.nn.transforms import UnscaleTransform
 
 
@@ -152,6 +153,7 @@ def build_deeptherm(
     ecfp_scale: float = 0.01,
     ecfp_trainable: bool = False,
     task_weights: Tensor | None = None,
+    loss: str = "mse",
     init_lr: float = 1e-4,
     max_lr: float = 1e-3,
     final_lr: float = 1e-4,
@@ -182,12 +184,20 @@ def build_deeptherm(
     else:
         X_d_transform = None
         predictor_input_dim = d_hidden
+    if loss == "mse":
+        criterion = MSE(task_weights=task_weights)
+    elif loss == "mae":
+        criterion = MAE(task_weights=task_weights)
+    else:
+        raise ValueError(f"unknown loss: {loss}")
+
     predictor = RegressionFFN(
         n_tasks=n_targets,
         input_dim=predictor_input_dim,
         hidden_dim=ffn_hidden,
         n_layers=ffn_layers,
         dropout=dropout,
+        criterion=criterion,
         task_weights=task_weights,
         output_transform=output_transform,
     )
