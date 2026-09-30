@@ -28,3 +28,27 @@ Cp_800   MAE=0.7078  RMSE=1.1263
 Cp_1000  MAE=0.7224  RMSE=1.1037
 Cp_1500  MAE=0.7180  RMSE=1.0805
 ```
+
+## n-Heptane mechanism prediction
+
+The prediction workflow requires Supplementary Data 4 and Supplementary Data 5.
+These source files and the trained checkpoints are not included in the repository.
+
+First reproduce or provide the ten run directories under
+`runs/hf2118_mixed_ensemble`. Then run:
+
+```bash
+PYTHON=.venv/Scripts/python ./run_nheptane_prediction.sh \
+    "/path/to/Supplementary Data 4_predicted dataset.xlsx" \
+    "/path/to/Supplementary Data 5_NASA polynomial thermochemistry in n-heptane mechanism.txt"
+```
+
+The script extracts the unique mechanism species from Data 5, matches them to
+the Data 4 SMILES and thermochemistry values, and applies the same ten-model
+inverse validation-MAE ensemble. The default output is:
+
+```text
+results/nheptane_comparison.xlsx
+```
+
+The workbook contains `Statistics`, `Comparison`, and `Ensemble` worksheets.

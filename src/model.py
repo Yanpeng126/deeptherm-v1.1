@@ -225,6 +225,7 @@ def load_deeptherm(
     ecfp_mode: str = "projected",
     ecfp_scale: float = 0.01,
     ecfp_trainable: bool = False,
+    dropout: float = 0.0,
     map_location: str = "cpu",
 ) -> MPNN:
     """Load a trained DeepTherm model from a Lightning checkpoint."""
@@ -248,6 +249,8 @@ def load_deeptherm(
         ecfp_mode=ecfp_mode,
         ecfp_scale=ecfp_scale,
         ecfp_trainable=ecfp_trainable,
+        dropout=dropout,
+        task_weights=torch.ones(n_targets, dtype=torch.float32),
         output_transform=placeholder_output,
     )
 
