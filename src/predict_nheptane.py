@@ -306,7 +306,7 @@ def write_workbook(path: Path, matched, run_names, validation_maes, weights):
         ])
 
     comparison = workbook.create_sheet("Comparison")
-    headers = ["Mechanism species", "SMILES"]
+    headers = ["Species", "SMILES"]
     for target in TARGET_COLS:
         headers.extend([f"Data 4 {target}", f"Reproduced {target}"])
     comparison.append(headers)

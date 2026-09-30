@@ -24,6 +24,19 @@ This implementation is rewritten from the paper text on top of [chemprop v2.2.3]
 
 Eight of nine random-split targets reach or exceed the paper. The residual ΔHf gap reflects the absence of QM9 transfer learning together with implementation details that the paper does not fully specify.
 
+### Hf-focused ensemble
+
+A heterogeneous 10-model ensemble using random-seed and hyperparameter
+variation improves the random-split Hf,298K MAE to **2.1178 kcal/mol**. The
+test split is fixed across all members, and predictions are combined using
+inverse validation-MAE weighting. See [Hf2118_ensemble.md](Hf2118_ensemble.md)
+for the exact training recipe and recorded metrics.
+
+The same ensemble can be applied to the species in the n-heptane mechanism
+from Supplementary Data 4 and 5 with `run_nheptane_prediction.sh`. The recorded
+comparison is provided in
+[`results/nheptane_comparison.xlsx`](results/nheptane_comparison.xlsx).
+
 ## Installation
 
 Clone this repository.
@@ -125,6 +138,11 @@ deeptherm-v1.1/
 │   ├── ensemble.py                  # inverse-MAE weighted aggregation
 │   └── grid_aggregate.py            # grid search summarizer
 ├── run_ensemble.sh                  # 10-seed ensemble driver
+├── run_hf2118_ensemble.sh           # Hf-focused heterogeneous ensemble
+├── run_nheptane_prediction.sh       # n-heptane prediction driver
+├── Hf2118_ensemble.md               # Hf-focused reproduction instructions
+├── results/
+│   └── nheptane_comparison.xlsx    # recorded n-heptane comparison
 ├── grid_search.sh                   # hyperparameter grid driver
 └── README.md
 ```
